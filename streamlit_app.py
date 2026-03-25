@@ -1,7 +1,7 @@
 """
 🎧 Complete AI Voice Separation System - Streamlit Cloud
 Live recording + Transcription + Separation + Enhancement
-Production Ready - Real Output Only
+Production Ready - Real Output with Whisper STT
 """
 
 import streamlit as st
@@ -38,6 +38,7 @@ st.markdown("""
         border-radius: 5px;
         padding: 15px;
         margin: 10px 0;
+        line-height: 1.6;
     }
     .metric-box {
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
@@ -51,6 +52,14 @@ st.markdown("""
         background: #d4edda;
         border: 1px solid #c3e6cb;
         color: #155724;
+        padding: 15px;
+        border-radius: 5px;
+        margin: 10px 0;
+    }
+    .info-box {
+        background: #d1ecf1;
+        border: 1px solid #bee5eb;
+        color: #0c5460;
         padding: 15px;
         border-radius: 5px;
         margin: 10px 0;
@@ -88,13 +97,21 @@ with col1:
 with col2:
     enhance = st.checkbox("Enhance", value=True)
 
+st.sidebar.markdown("### 🗣️ Transcription")
+whisper_model = st.sidebar.selectbox(
+    "Whisper Model",
+    ["tiny", "base", "small"],
+    help="tiny=fast, base=balanced, small=accurate"
+)
+
 st.sidebar.markdown("---")
 st.sidebar.markdown("""
     ### 🎯 What This Does
     ✅ Detects number of speakers
     ✅ Separates speakers
     ✅ Removes noise
-    ✅ Analyzes speech
+    ✅ **Transcribes speech to text**
+    ✅ Analyzes audio quality
     ✅ Shows quality metrics
     ✅ Downloads clean audio
     """)
@@ -102,6 +119,36 @@ st.sidebar.markdown("""
 # ============================================
 # HELPER FUNCTIONS
 # ============================================
+
+@st.cache_resource
+def load_whisper_model(model_name="base"):
+    """Load Whisper model (cached)"""
+    try:
+        import whisper
+        st.info(f"🔄 Loading Whisper '{model_name}' model...")
+        model = whisper.load_model(model_name)
+        return model
+    except Exception as e:
+        st.error(f"❌ Error loading Whisper: {e}")
+        return None
+
+def transcribe_with_whisper(audio_data, sample_rate, model, language="en"):
+    """Transcribe audio using Whisper"""
+    try:
+        # Save audio temporarily
+        temp_audio_path = Path("temp_audio_for_whisper.wav")
+        sf.write(str(temp_audio_path), audio_data, sample_rate)
+        
+        # Transcribe
+        result = model.transcribe(str(temp_audio_path), language=language, verbose=False)
+        
+        # Clean up
+        temp_audio_path.unlink()
+        
+        return result
+    except Exception as e:
+        st.error(f"❌ Transcription error: {e}")
+        return None
 
 def plot_waveform(audio_data, sample_rate, title="Waveform"):
     """Plot waveform"""
@@ -192,20 +239,13 @@ def separate_speakers(audio, num_speakers=2):
 def detect_speakers(audio_data, sample_rate):
     """Detect number of speakers"""
     try:
-        # Compute mel spectrogram
         S = librosa.feature.melspectrogram(y=audio_data, sr=sample_rate, n_mels=128)
         energy = librosa.power_to_db(S, ref=np.max)
         
-        # Find frames with significant energy
         mean_energy = np.mean(energy)
-        std_energy = np.std(energy)
-        threshold = mean_energy
-        
-        # Count energy peaks
         frame_energy = np.mean(energy, axis=0)
-        peaks = np.sum(frame_energy > threshold)
+        peaks = np.sum(frame_energy > mean_energy)
         
-        # Estimate number of speakers (2-4)
         num = max(2, min(4, 2 + int(peaks / len(frame_energy) * 2)))
         
         return num
@@ -230,14 +270,13 @@ def compute_metrics(original, processed):
     except:
         return 0, 0
 
-def transcribe_audio(audio, sample_rate):
-    """Analyze and transcribe audio"""
+def analyze_audio(audio, sample_rate):
+    """Analyze audio quality"""
     try:
         duration = len(audio) / sample_rate
         rms = np.sqrt(np.mean(audio ** 2))
         peak = np.max(np.abs(audio))
         
-        # Frequency analysis
         S = np.abs(librosa.stft(audio))
         S_db = librosa.power_to_db(S, ref=np.max)
         freqs = librosa.fft_frequencies(sr=sample_rate)
@@ -248,35 +287,31 @@ def transcribe_audio(audio, sample_rate):
         else:
             dominant_freq = 0
         
-        # Speech detection
-        silence_threshold = np.std(audio) * 0.1
-        has_speech = rms > silence_threshold
-        
-        # Zero crossing rate (speech indicator)
         zcr = librosa.feature.zero_crossing_rate(audio)[0]
         mean_zcr = np.mean(zcr)
         
-        # Generate transcription
-        transcription = f"""**Speech Analysis Report:**
+        has_speech = rms > np.std(audio) * 0.1
+        
+        report = f"""**Audio Quality Analysis:**
 
-📊 **Audio Properties:**
+📊 **Signal Properties:**
 • Duration: {duration:.2f} seconds
 • RMS Level: {rms:.4f}
 • Peak Level: {peak:.4f}
 • Dominant Frequency: {dominant_freq:.0f} Hz
 
-🎤 **Speech Detection:**
+🎤 **Speech Characteristics:**
 • Speech Detected: {'✅ Yes' if has_speech else '❌ No'}
 • Zero Crossing Rate: {mean_zcr:.4f}
-• Confidence: {'High' if rms > 0.05 else 'Low'}
-
-📈 **Quality Assessment:**
 • Signal Quality: {'Good' if rms > 0.05 else 'Low'}
+
+📈 **Recommendations:**
+• Audio Level: {'Optimal' if 0.05 < rms < 0.5 else 'Adjust'}
 • Noise Level: {'Low' if rms > 0.05 else 'High'}
-• Recommendation: {'Clear audio' if rms > 0.05 else 'Very quiet or silent'}
+• Overall Quality: {'Excellent' if rms > 0.1 else 'Good' if rms > 0.05 else 'Poor'}
 """
         
-        return transcription
+        return report
     except Exception as e:
         return f"Analysis error: {e}"
 
@@ -285,7 +320,7 @@ def transcribe_audio(audio, sample_rate):
 # ============================================
 
 st.title("🎧 AI Voice Separation System")
-st.markdown("*Detect speakers • Separate audio • Analyze speech • Download results*")
+st.markdown("*Detect speakers • Separate audio • Transcribe speech • Analyze quality • Download results*")
 
 # ============================================
 # INPUT MODES
@@ -309,7 +344,6 @@ if "Upload" in input_mode:
             st.session_state.sample_rate = sample_rate
             st.session_state.processed = False
             
-            # Display audio info
             col1, col2, col3 = st.columns(3)
             with col1:
                 st.metric("📏 Duration", f"{len(audio_data)/sample_rate:.2f}s")
@@ -343,12 +377,10 @@ elif "Recording" in input_mode:
             with st.spinner("🔄 Processing recording..."):
                 audio_bytes = audio_input.read()
                 
-                # Save temporarily
                 temp_file = Path("temp_audio.wav")
                 with open(temp_file, "wb") as f:
                     f.write(audio_bytes)
                 
-                # Load
                 audio_data, sample_rate = librosa.load(str(temp_file), sr=None, mono=True)
                 
                 st.session_state.audio_loaded = True
@@ -356,7 +388,6 @@ elif "Recording" in input_mode:
                 st.session_state.sample_rate = sample_rate
                 st.session_state.processed = False
                 
-                # Display info
                 col1, col2, col3 = st.columns(3)
                 with col1:
                     st.metric("Duration", f"{len(audio_data)/sample_rate:.2f}s")
@@ -368,7 +399,6 @@ elif "Recording" in input_mode:
                 st.markdown('<div class="success-box">✅ Recording loaded!</div>', 
                            unsafe_allow_html=True)
                 
-                # Cleanup
                 temp_file.unlink()
         
         except Exception as e:
@@ -391,6 +421,9 @@ if st.session_state.audio_loaded and st.session_state.audio_data is not None:
         progress_bar = st.progress(0)
         status_text = st.empty()
         
+        # Load Whisper model at the start
+        whisper_model = load_whisper_model(whisper_model)
+        
         try:
             # ========== STEP 1: INPUT VISUALIZATION ==========
             st.subheader("📊 Input Audio Visualization")
@@ -404,7 +437,7 @@ if st.session_state.audio_loaded and st.session_state.audio_data is not None:
                 if fig:
                     st.plotly_chart(fig, use_container_width=True)
             
-            progress_bar.progress(15)
+            progress_bar.progress(12)
             status_text.info("📊 Input visualization complete...")
             
             # ========== STEP 2: SPEAKER DETECTION ==========
@@ -442,7 +475,7 @@ if st.session_state.audio_loaded and st.session_state.audio_data is not None:
                 </div>
                 """, unsafe_allow_html=True)
             
-            progress_bar.progress(30)
+            progress_bar.progress(24)
             status_text.info(f"✅ Detected {detected_speakers} speakers")
             
             # ========== STEP 3: SEPARATION ==========
@@ -452,7 +485,7 @@ if st.session_state.audio_loaded and st.session_state.audio_data is not None:
             st.markdown(f'<div class="success-box">✅ Successfully separated audio into {len(separated_audio)} speaker tracks</div>', 
                        unsafe_allow_html=True)
             
-            progress_bar.progress(45)
+            progress_bar.progress(36)
             status_text.info("🔊 Speakers separated...")
             
             # ========== STEP 4: ENHANCEMENT ==========
@@ -468,7 +501,7 @@ if st.session_state.audio_loaded and st.session_state.audio_data is not None:
             st.markdown(f'<div class="success-box">✅ Noise reduction: {noise_strength*100:.0f}% strength applied</div>', 
                        unsafe_allow_html=True)
             
-            progress_bar.progress(60)
+            progress_bar.progress(48)
             status_text.info("🧹 Audio enhanced...")
             
             # ========== STEP 5: QUALITY METRICS ==========
@@ -491,27 +524,68 @@ if st.session_state.audio_loaded and st.session_state.audio_data is not None:
                     </div>
                     """, unsafe_allow_html=True)
             
-            progress_bar.progress(75)
+            progress_bar.progress(60)
             status_text.info("📈 Quality metrics computed...")
             
-            # ========== STEP 6: TRANSCRIPTION ==========
-            st.subheader("🗣️ Speech Analysis & Transcription")
+            # ========== STEP 6: TRANSCRIPTION WITH WHISPER ==========
+            st.subheader("🗣️ Speech-to-Text Transcription")
             
             transcriptions = []
+            
+            if whisper_model:
+                for i, speaker_audio in enumerate(enhanced_audio):
+                    with st.spinner(f"🎤 Transcribing Speaker {i+1}..."):
+                        result = transcribe_with_whisper(speaker_audio, sample_rate, whisper_model)
+                        
+                        if result:
+                            text = result.get("text", "No speech detected")
+                            language = result.get("language", "unknown")
+                            confidence = result.get("segments", [{}])[0].get("probability", 0) if result.get("segments") else 0
+                            
+                            transcriptions.append({
+                                "speaker": i+1,
+                                "text": text,
+                                "language": language,
+                                "confidence": confidence
+                            })
+                        else:
+                            transcriptions.append({
+                                "speaker": i+1,
+                                "text": "Transcription failed",
+                                "language": "unknown",
+                                "confidence": 0
+                            })
+            else:
+                st.error("❌ Whisper model not loaded. Skipping transcription.")
+                for i in range(detected_speakers):
+                    transcriptions.append({
+                        "speaker": i+1,
+                        "text": "Transcription unavailable",
+                        "language": "unknown",
+                        "confidence": 0
+                    })
+            
+            progress_bar.progress(72)
+            status_text.info("🗣️ Speech transcription complete...")
+            
+            # ========== STEP 7: AUDIO ANALYSIS ==========
+            st.subheader("📊 Audio Quality Analysis")
+            
+            analyses = []
             for i, speaker_audio in enumerate(enhanced_audio):
-                transcription = transcribe_audio(speaker_audio, sample_rate)
-                transcriptions.append({"speaker": i+1, "text": transcription})
+                analysis = analyze_audio(speaker_audio, sample_rate)
+                analyses.append(analysis)
             
-            progress_bar.progress(85)
-            status_text.info("🗣️ Speech analysis complete...")
+            progress_bar.progress(84)
+            status_text.info("📊 Audio analysis complete...")
             
-            # ========== STEP 7: SEPARATED OUTPUTS ==========
+            # ========== STEP 8: SEPARATED OUTPUTS ==========
             st.subheader("🎧 Separated Speaker Outputs")
             
             output_path = Path("outputs")
             output_path.mkdir(exist_ok=True)
             
-            for i, (speaker_audio, transcription_data) in enumerate(zip(enhanced_audio, transcriptions)):
+            for i, (speaker_audio, transcription_data, analysis) in enumerate(zip(enhanced_audio, transcriptions, analyses)):
                 with st.container():
                     st.markdown(f"<div class='speaker-section'>", unsafe_allow_html=True)
                     
@@ -525,6 +599,15 @@ if st.session_state.audio_loaded and st.session_state.audio_data is not None:
                         is_silent = np.mean(np.abs(speaker_audio)) < 0.01
                         status_badge = "⚪ Silent" if is_silent else "🟢 Active"
                         st.metric("Status", status_badge)
+                    
+                    # Language and confidence
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        lang = transcription_data.get("language", "unknown")
+                        st.markdown(f"**Language:** {lang.upper()}")
+                    with col2:
+                        conf = transcription_data.get("confidence", 0)
+                        st.markdown(f"**Confidence:** {conf*100:.1f}%")
                     
                     # Audio player
                     st.audio(speaker_audio, sample_rate=sample_rate, format="audio/wav")
@@ -541,28 +624,54 @@ if st.session_state.audio_loaded and st.session_state.audio_data is not None:
                         if fig:
                             st.plotly_chart(fig, use_container_width=True)
                     
-                    # Transcription
-                    st.markdown("**📝 Speech Analysis:**")
-                    st.markdown(f"<div class='transcript-box'>{transcription_data['text']}</div>",
+                    # ===== TRANSCRIPTION =====
+                    st.markdown("### 📝 **Transcription (Speech-to-Text)**")
+                    transcript_text = transcription_data.get("text", "No speech detected")
+                    st.markdown(f"<div class='transcript-box'>{transcript_text}</div>",
+                               unsafe_allow_html=True)
+                    
+                    # ===== ANALYSIS =====
+                    st.markdown("### 📊 **Quality Analysis**")
+                    st.markdown(f"<div class='info-box'>{analysis}</div>",
                                unsafe_allow_html=True)
                     
                     # Download button
                     wav_file = output_path / f"speaker_{i+1}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.wav"
                     sf.write(str(wav_file), speaker_audio, sample_rate)
                     
-                    with open(str(wav_file), "rb") as f:
-                        st.download_button(
-                            label=f"⬇️ Download Speaker {i+1} Audio",
-                            data=f.read(),
-                            file_name=f"speaker_{i+1}.wav",
-                            mime="audio/wav",
-                            key=f"download_{i}"
-                        )
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        with open(str(wav_file), "rb") as f:
+                            st.download_button(
+                                label=f"⬇️ Download Speaker {i+1} Audio",
+                                data=f.read(),
+                                file_name=f"speaker_{i+1}.wav",
+                                mime="audio/wav",
+                                key=f"download_audio_{i}"
+                            )
+                    
+                    with col2:
+                        # Download transcript as text
+                        transcript_file = output_path / f"speaker_{i+1}_transcript.txt"
+                        with open(transcript_file, "w") as f:
+                            f.write(f"Speaker {i+1} Transcription\n")
+                            f.write(f"Language: {transcription_data.get('language', 'unknown')}\n")
+                            f.write(f"Confidence: {transcription_data.get('confidence', 0)*100:.1f}%\n")
+                            f.write(f"\n{transcript_text}\n")
+                        
+                        with open(transcript_file, "r") as f:
+                            st.download_button(
+                                label=f"📄 Download Speaker {i+1} Text",
+                                data=f.read(),
+                                file_name=f"speaker_{i+1}_transcript.txt",
+                                mime="text/plain",
+                                key=f"download_text_{i}"
+                            )
                     
                     st.markdown("</div>", unsafe_allow_html=True)
             
             progress_bar.progress(100)
-            st.markdown('<div class="success-box">✅ Analysis complete! All results ready for download.</div>', 
+            st.markdown('<div class="success-box">✅ Complete! All results ready for download.</div>', 
                        unsafe_allow_html=True)
             
             # ========== SESSION LOG ==========
@@ -574,11 +683,13 @@ if st.session_state.audio_loaded and st.session_state.audio_data is not None:
                 "duration": len(audio_data) / sample_rate,
                 "speakers_detected": detected_speakers,
                 "sample_rate": sample_rate,
-                "metrics": metrics_list
+                "whisper_model": whisper_model,
+                "metrics": metrics_list,
+                "transcriptions": transcriptions
             }
             
             with open(logs_path / "session_log.json", "a") as f:
-                json.dump(session_log, f)
+                json.dump(session_log, f, indent=2)
                 f.write("\n")
         
         except Exception as e:
@@ -594,7 +705,8 @@ st.markdown("---")
 st.markdown("""
     <div style='text-align: center; padding: 20px;'>
     <p><b>🎧 AI Voice Separation System</b></p>
-    <p>Speaker Detection • Audio Separation • Speech Analysis • Quality Metrics</p>
+    <p>Speaker Detection • Audio Separation • Speech Transcription • Quality Analysis</p>
     <p><small>100% FREE • Open Source • Production Ready</small></p>
+    <p><small>Powered by Whisper, Librosa, Plotly, Streamlit</small></p>
     </div>
     """, unsafe_allow_html=True)
