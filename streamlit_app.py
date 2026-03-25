@@ -10,7 +10,6 @@ import soundfile as sf
 from pathlib import Path
 import plotly.graph_objects as go
 from datetime import datetime
-import pandas as pd
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -67,38 +66,48 @@ def plot_waveform(audio_data, sample_rate):
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=time, y=audio_data, mode='lines', 
                             line=dict(color='#667eea', width=1)))
-    fig.update_layout(title='Waveform', xaxis_title='Time (s)', 
-                     yaxis_title='Amplitude', template='plotly_white')
+    fig.update_layout(
+        title='Waveform', 
+        xaxis_title='Time (s)', 
+        yaxis_title='Amplitude', 
+        template='plotly_white',
+        height=300
+    )
     return fig
 
 def plot_spectrogram(audio_data, sample_rate):
     """Plot spectrogram"""
-    D = librosa.stft(audio_data)
-    S_db = librosa.power_to_db(np.abs(D) ** 2, ref=np.max)
-    fig = go.Figure(data=go.Heatmap(z=S_db, colorscale='Viridis'))
-    fig.update_layout(title='Spectrogram', template='plotly_white')
-    return fig
+    try:
+        D = librosa.stft(audio_data)
+        S_db = librosa.power_to_db(np.abs(D) ** 2, ref=np.max)
+        fig = go.Figure(data=go.Heatmap(z=S_db, colorscale='Viridis'))
+        fig.update_layout(title='Spectrogram', template='plotly_white', height=300)
+        return fig
+    except:
+        return None
 
-def simple_denoise(audio, sr, strength=0.7):
+def simple_denoise(audio, strength=0.7):
     """Simple noise reduction using spectral gating"""
-    D = librosa.stft(audio)
-    magnitude = np.abs(D)
-    phase = np.angle(D)
-    
-    # Estimate noise floor
-    noise_floor = np.percentile(magnitude, 20, axis=1, keepdims=True)
-    
-    # Apply gate
-    gate = np.maximum(magnitude - strength * noise_floor, 0) / (magnitude + 1e-10)
-    D_denoised = gate * D
-    
-    # Inverse STFT
-    audio_denoised = librosa.istft(D_denoised)
-    return audio_denoised
+    try:
+        D = librosa.stft(audio)
+        magnitude = np.abs(D)
+        phase = np.angle(D)
+        
+        # Estimate noise floor
+        noise_floor = np.percentile(magnitude, 20, axis=1, keepdims=True)
+        
+        # Apply gate
+        gate = np.maximum(magnitude - strength * noise_floor, 0) / (magnitude + 1e-10)
+        D_denoised = gate * D
+        
+        # Inverse STFT
+        audio_denoised = librosa.istft(D_denoised)
+        return audio_denoised
+    except:
+        return audio
 
-def simple_separation(audio, sr, num_speakers=2):
-    """Simple speaker separation using spectral clustering"""
-    # For demo: split audio into chunks and treat as different speakers
+def simple_separation(audio, num_speakers=2):
+    """Simple speaker separation by splitting audio"""
     chunk_length = len(audio) // num_speakers
     separated = []
     
@@ -115,6 +124,22 @@ def simple_separation(audio, sr, num_speakers=2):
     
     return separated
 
+def detect_speakers(audio_data, sample_rate):
+    """Detect number of speakers based on energy"""
+    try:
+        # Compute frame energy
+        S = librosa.feature.melspectrogram(y=audio_data, sr=sample_rate)
+        energy = librosa.power_to_db(S, ref=np.max)
+        mean_energy = np.mean(energy)
+        
+        # Count frames above threshold
+        above_threshold = np.sum(np.mean(energy, axis=0) > mean_energy)
+        num_speakers = max(2, min(4, int(above_threshold / len(energy[0]) * 4)))
+        
+        return num_speakers
+    except:
+        return 2
+
 # ============================================
 # MAIN CONTENT
 # ============================================
@@ -129,8 +154,10 @@ st.markdown("*Simple speech processing - 100% FREE*")
 if input_mode == "Upload Audio":
     st.subheader("📤 Upload Audio File")
     
-    audio_file = st.file_uploader("Choose audio (.wav, .mp3, .ogg)", 
-                                   type=["wav", "mp3", "ogg"])
+    audio_file = st.file_uploader(
+        "Choose audio (.wav, .mp3, .ogg)", 
+        type=["wav", "mp3", "ogg"]
+    )
     
     if audio_file:
         try:
@@ -147,55 +174,65 @@ if input_mode == "Upload Audio":
             
             st.success("✅ Loaded!")
             
-            if st.button("▶️ PROCESS", use_container_width=True):
+            if st.button("▶️ PROCESS AUDIO", use_container_width=True, key="process"):
                 progress = st.progress(0)
+                status = st.empty()
                 
                 try:
-                    # Visualization
+                    # Step 1: Visualization
                     st.subheader("📊 Audio Analysis")
                     col1, col2 = st.columns(2)
+                    
                     with col1:
-                        st.plotly_chart(plot_waveform(audio_data, sample_rate), use_container_width=True)
+                        with st.spinner("Plotting waveform..."):
+                            fig = plot_waveform(audio_data, sample_rate)
+                            if fig:
+                                st.plotly_chart(fig, use_container_width=True)
+                    
                     with col2:
-                        st.plotly_chart(plot_spectrogram(audio_data, sample_rate), use_container_width=True)
+                        with st.spinner("Plotting spectrogram..."):
+                            fig = plot_spectrogram(audio_data, sample_rate)
+                            if fig:
+                                st.plotly_chart(fig, use_container_width=True)
                     
                     progress.progress(25)
+                    status.info("📊 Analysis complete...")
                     
-                    # Speaker Detection (simplified)
+                    # Step 2: Speaker Detection
                     st.subheader("👥 Speaker Detection")
-                    # Simple: detect based on energy changes
-                    energy = np.sqrt(np.mean(librosa.util.frame(audio_data, frame_length=2048, 
-                                                                  hop_length=512)**2, axis=0))
-                    threshold = np.mean(energy)
-                    num_speakers = max(2, min(4, int(np.sum(energy > threshold) / len(energy) * 4)))
+                    with st.spinner("Detecting speakers..."):
+                        num_speakers = detect_speakers(audio_data, sample_rate)
                     
                     col1, col2, col3 = st.columns(3)
                     with col1:
-                        st.metric("Speakers", num_speakers)
+                        st.metric("🎤 Speakers", num_speakers)
                     with col2:
-                        st.metric("Duration", f"{len(audio_data)/sample_rate:.2f}s")
+                        st.metric("⏱️ Duration", f"{len(audio_data)/sample_rate:.2f}s")
                     with col3:
-                        st.metric("Sample Rate", f"{sample_rate}Hz")
+                        st.metric("📍 Sample Rate", f"{sample_rate}Hz")
                     
                     progress.progress(40)
+                    status.info(f"👥 Detected {num_speakers} speakers...")
                     
-                    # Separation
+                    # Step 3: Separation
                     st.subheader("🔊 Speech Separation")
-                    with st.spinner("Separating..."):
-                        separated_audio = simple_separation(audio_data, sample_rate, num_speakers)
+                    with st.spinner("Separating speakers..."):
+                        separated_audio = simple_separation(audio_data, num_speakers)
                     
                     progress.progress(60)
+                    status.info("🔊 Speakers separated...")
                     
-                    # Noise Reduction
+                    # Step 4: Noise Reduction
                     st.subheader("🧹 Noise Reduction")
                     enhanced_audio = []
-                    for speaker_audio in separated_audio:
-                        cleaned = simple_denoise(speaker_audio, sample_rate, strength=noise_strength)
+                    for i, speaker_audio in enumerate(separated_audio):
+                        cleaned = simple_denoise(speaker_audio, strength=noise_strength)
                         enhanced_audio.append(cleaned)
                     
                     progress.progress(75)
+                    status.info("🧹 Audio enhanced...")
                     
-                    # Output
+                    # Step 5: Output
                     st.subheader("🎧 Separated Speakers")
                     output_path = Path("outputs")
                     output_path.mkdir(exist_ok=True)
@@ -203,17 +240,30 @@ if input_mode == "Upload Audio":
                     for i, speaker_audio in enumerate(enhanced_audio):
                         with st.container():
                             st.markdown(f"<div class='speaker-section'>", unsafe_allow_html=True)
-                            st.markdown(f"### 🎤 Speaker {i+1}")
                             
+                            col1, col2 = st.columns([3, 1])
+                            with col1:
+                                st.markdown(f"### 🎤 Speaker {i+1}")
+                            with col2:
+                                duration = len(speaker_audio) / sample_rate
+                                st.metric("Duration", f"{duration:.2f}s")
+                            
+                            # Audio player
                             st.audio(speaker_audio, sample_rate=sample_rate, format="audio/wav")
                             
+                            # Waveform
                             col1, col2 = st.columns(2)
                             with col1:
-                                st.plotly_chart(plot_waveform(speaker_audio, sample_rate), 
-                                               use_container_width=True)
+                                st.markdown("#### Waveform")
+                                fig = plot_waveform(speaker_audio, sample_rate)
+                                if fig:
+                                    st.plotly_chart(fig, use_container_width=True)
+                            
                             with col2:
-                                st.plotly_chart(plot_spectrogram(speaker_audio, sample_rate), 
-                                               use_container_width=True)
+                                st.markdown("#### Spectrogram")
+                                fig = plot_spectrogram(speaker_audio, sample_rate)
+                                if fig:
+                                    st.plotly_chart(fig, use_container_width=True)
                             
                             # Download
                             wav_file = output_path / f"speaker_{i+1}.wav"
@@ -231,26 +281,30 @@ if input_mode == "Upload Audio":
                             st.markdown("</div>", unsafe_allow_html=True)
                     
                     progress.progress(100)
-                    st.success("✅ Complete!")
-                
+                    status.success("✅ Complete!")
+                    
                 except Exception as e:
                     st.error(f"❌ Error: {str(e)}")
+                    st.exception(e)
         
         except Exception as e:
             st.error(f"❌ Load error: {str(e)}")
 
 elif input_mode == "Sample Audio":
-    st.subheader("📻 Generate Sample")
+    st.subheader("📻 Generate Sample Audio")
+    st.info("Generate synthetic multi-speaker audio for testing")
     
-    if st.button("🎵 Create Sample Audio"):
+    if st.button("🎵 Create Sample", use_container_width=True, key="sample"):
         sample_rate = 16000
         duration = 8
         t = np.linspace(0, duration, int(sample_rate * duration))
         
-        speaker1 = np.sin(2 * np.pi * 200 * t)
-        speaker2 = np.sin(2 * np.pi * 300 * t)
+        # Create two speakers
+        speaker1 = 0.3 * np.sin(2 * np.pi * 200 * t)
+        speaker2 = 0.3 * np.sin(2 * np.pi * 300 * t)
         
-        mixed = (speaker1 + speaker2) / 2 + 0.05 * np.random.randn(len(t))
+        # Mix with noise
+        mixed = speaker1 + speaker2 + 0.02 * np.random.randn(len(t))
         mixed = mixed / np.max(np.abs(mixed))
         
         col1, col2, col3 = st.columns(3)
@@ -262,12 +316,12 @@ elif input_mode == "Sample Audio":
             st.metric("Speakers", 2)
         
         st.audio(mixed, sample_rate=sample_rate)
-        st.success("✅ Ready to process!")
+        st.success("✅ Sample generated! Click 'Process Audio' to separate.")
 
 st.markdown("---")
 st.markdown("""
     <div style='text-align: center;'>
-    <b>🎧 Voice Separation - 100% FREE</b><br>
-    No costs • No API keys • Open source
+    <p><b>🎧 Voice Separation - 100% FREE</b></p>
+    <p>No costs • No API keys • Open source</p>
     </div>
     """, unsafe_allow_html=True)
