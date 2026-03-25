@@ -1,0 +1,176 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: speech-separation
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: speech-separation
+data:
+  PYTHONUNBUFFERED: "1"
+  TF_CPP_MIN_LOG_LEVEL: "2"
+  STREAMLIT_SERVER_MAXUPLOADSIZE: "500"
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: speech-separation-app
+  namespace: speech-separation
+  labels:
+    app: speech-separation
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: speech-separation
+  template:
+    metadata:
+      labels:
+        app: speech-separation
+    spec:
+      containers:
+      - name: speech-separation
+        image: your-registry/speech-separation-system:latest
+        imagePullPolicy: Always
+        ports:
+        - name: streamlit
+          containerPort: 8501
+          protocol: TCP
+        resources:
+          requests:
+            memory: "8Gi"
+            cpu: "2"
+            nvidia.com/gpu: "1"
+          limits:
+            memory: "16Gi"
+            cpu: "4"
+            nvidia.com/gpu: "1"
+        envFrom:
+        - configMapRef:
+            name: app-config
+        volumeMounts:
+        - name: outputs
+          mountPath: /app/outputs
+        - name: logs
+          mountPath: /app/logs
+        - name: models
+          mountPath: /app/pretrained_models
+        livenessProbe:
+          httpGet:
+            path: /_stcore/health
+            port: 8501
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /_stcore/health
+            port: 8501
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 2
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+      volumes:
+      - name: outputs
+        persistentVolumeClaim:
+          claimName: outputs-pvc
+      - name: logs
+        persistentVolumeClaim:
+          claimName: logs-pvc
+      - name: models
+        persistentVolumeClaim:
+          claimName: models-pvc
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: speech-separation-service
+  namespace: speech-separation
+spec:
+  type: LoadBalancer
+  selector:
+    app: speech-separation
+  ports:
+  - name: streamlit
+    port: 80
+    targetPort: 8501
+    protocol: TCP
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: outputs-pvc
+  namespace: speech-separation
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 100Gi
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: logs-pvc
+  namespace: speech-separation
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: models-pvc
+  namespace: speech-separation
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 50Gi
+
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: speech-separation-hpa
+  namespace: speech-separation
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: speech-separation-app
+  minReplicas: 2
+  maxReplicas: 5
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80

@@ -1,0 +1,46 @@
+version: '3.9'
+
+services:
+  speech-separation-assemblyai:
+    build:
+      context: .
+      dockerfile: Dockerfile.assemblyai
+    container_name: speech-separation-ai
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./outputs:/app/outputs
+      - ./logs:/app/logs
+      - ./pretrained_models:/app/pretrained_models
+      - /dev/shm:/dev/shm
+    environment:
+      - STREAMLIT_SERVER_MAXUPLOADSIZE=500
+      - PYTHONUNBUFFERED=1
+      - TF_CPP_MIN_LOG_LEVEL=2
+    restart: unless-stopped
+    networks:
+      - speech-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  redis:
+    image: redis:7-alpine
+    container_name: speech-redis-ai
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - speech-net
+    restart: unless-stopped
+
+networks:
+  speech-net:
+    driver: bridge
+
+volumes:
+  redis_data:
